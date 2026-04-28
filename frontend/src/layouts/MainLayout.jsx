@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Sidebar from '../components/Sidebar';
 import { Menu, Sun, Moon } from 'lucide-react';
+import { Outlet } from 'react-router-dom';
 
 const MainLayout = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -46,7 +47,7 @@ const MainLayout = ({ children }) => {
         {/* Main Content Area */}
         <main className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 dark:bg-black/20 p-4 md:p-6 transition-colors duration-300">
           <div className="max-w-7xl mx-auto">
-            {children}
+            {children || <Outlet />}
           </div>
         </main>
       </div>

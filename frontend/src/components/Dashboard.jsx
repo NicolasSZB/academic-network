@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import PerformanceChart from './PerformanceChart';
 import ActivityFeed from './ActivityFeed';
-import { BookOpen, Award, Users, Plus, X, CheckCircle } from 'lucide-react';
+import { BookOpen, Award, Users, Plus, X, CheckCircle, Brain } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
 const Dashboard = () => {
   const [examData, setExamData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const navigate = useNavigate();
 
   // Modal & Form State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -14,6 +16,52 @@ const Dashboard = () => {
   const [score, setScore] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showToast, setShowToast] = useState(false);
+
+  // Diagnostic State
+  const [diagnosticData, setDiagnosticData] = useState(null);
+  const [diagnosticLoading, setDiagnosticLoading] = useState(true);
+  const [diagnosticError, setDiagnosticError] = useState(null);
+
+  const fetchDiagnostic = async (exams) => {
+    setDiagnosticLoading(true);
+    
+    // Group by subject to get latest score
+    const latestScores = {
+      math: 0,
+      sciences: 0,
+      humanities: 0,
+      languages: 0
+    };
+
+    exams.forEach(exam => {
+      const subj = exam.subject.toLowerCase();
+      if (latestScores[subj] !== undefined) {
+        latestScores[subj] = exam.score;
+      }
+    });
+
+    const queryParams = new URLSearchParams(latestScores).toString();
+    const token = localStorage.getItem('token');
+
+    try {
+      const response = await fetch(`http://localhost:8000/api/diagnostic?${queryParams}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (!response.ok) {
+        console.error(`Diagnostic Fetch Failed - HTTP Status: ${response.status}`);
+        if (response.status === 401) navigate('/login');
+        throw new Error('Failed to fetch diagnostic');
+      }
+      const data = await response.json();
+      setDiagnosticData(data);
+    } catch (err) {
+      setDiagnosticError(err.message);
+    } finally {
+      setDiagnosticLoading(false);
+    }
+  };
 
   const fetchData = () => {
     setLoading(true);
@@ -25,7 +73,13 @@ const Dashboard = () => {
       }
     })
       .then(res => {
-        if (!res.ok) throw new Error('Failed to fetch exams');
+        if (!res.ok) {
+          console.error(`GET /api/mock-exams Failed - HTTP Status: ${res.status} ${res.statusText}`);
+          if (res.status === 401) {
+            navigate('/login');
+          }
+          throw new Error('Failed to fetch exams');
+        }
         return res.json();
       })
       .then(data => {
@@ -36,6 +90,7 @@ const Dashboard = () => {
         }));
         setExamData(mappedData);
         setLoading(false);
+        fetchDiagnostic(data);
       })
       .catch(err => {
         setError(err.message);
@@ -68,7 +123,13 @@ const Dashboard = () => {
       body: JSON.stringify(payload)
     })
     .then(res => {
-      if (!res.ok) throw new Error('Failed to submit score');
+      if (!res.ok) {
+        console.error(`POST /api/mock-exams Failed - HTTP Status: ${res.status} ${res.statusText}`);
+        if (res.status === 401) {
+          navigate('/login');
+        }
+        throw new Error('Failed to submit score');
+      }
       return res.json();
     })
     .then(() => {
@@ -149,8 +210,48 @@ const Dashboard = () => {
 
       {/* Main Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-2 space-y-6">
           <PerformanceChart data={examData} loading={loading} error={error} />
+          
+          {/* AI Diagnostic Section */}
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 p-6 transition-colors duration-300">
+            <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">AI Study Diagnostic</h3>
+            
+            {diagnosticLoading ? (
+              <div className="flex flex-col items-center justify-center py-8">
+                <div className="w-8 h-8 border-4 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
+                <p className="mt-4 text-sm text-gray-500 dark:text-gray-400">Analyzing performance...</p>
+              </div>
+            ) : diagnosticError ? (
+              <div className="text-red-500 bg-red-50 dark:bg-red-900/20 p-4 rounded-xl text-sm">
+                Failed to load diagnostic: {diagnosticError}
+              </div>
+            ) : diagnosticData ? (
+              <div className="space-y-6">
+                <div className={`p-4 rounded-xl border ${diagnosticData.overall_status === 'Excellent' ? 'bg-green-50 border-green-100 dark:bg-green-900/20 dark:border-green-800' : 'bg-yellow-50 border-yellow-100 dark:bg-yellow-900/20 dark:border-yellow-800'}`}>
+                  <h4 className="font-semibold text-gray-900 dark:text-white mb-2">Diagnostic Summary</h4>
+                  <p className="text-gray-700 dark:text-gray-300 text-sm">
+                    Overall Status: <span className="font-bold">{diagnosticData.overall_status}</span>
+                  </p>
+                </div>
+                
+                <div>
+                  <h4 className="font-semibold text-gray-900 dark:text-white mb-3 flex items-center">
+                    <Brain className="w-5 h-5 mr-2 text-indigo-500" />
+                    Study Recommendations
+                  </h4>
+                  <ul className="space-y-2">
+                    {diagnosticData.recommendations.map((rec, i) => (
+                      <li key={i} className="flex items-start">
+                        <CheckCircle className="w-4 h-4 text-indigo-500 mr-2 mt-0.5 flex-shrink-0" />
+                        <span className="text-sm text-gray-600 dark:text-gray-400 leading-tight">{rec}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            ) : null}
+          </div>
         </div>
         <div className="lg:col-span-1">
           <ActivityFeed />

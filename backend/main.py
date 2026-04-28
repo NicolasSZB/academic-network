@@ -1,13 +1,14 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from pydantic import BaseModel
 from typing import List
-from security import verify_password, get_password_hash, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
-from datetime import timedelta
+from datetime import datetime, timedelta
+from jose import jwt, JWTError
+from security import verify_password, get_password_hash, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM
 
 # Database Setup
 SQLALCHEMY_DATABASE_URL = "sqlite:///./academic.db"
@@ -25,6 +26,8 @@ class User(Base):
     role = Column(String, default="student")
     
     scores = relationship("MockExam", back_populates="user")
+    threads = relationship("ForumThread", back_populates="author")
+    comments = relationship("ForumComment", back_populates="author")
 
 class MockExam(Base):
     __tablename__ = "mock_exams"
@@ -34,6 +37,29 @@ class MockExam(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     
     user = relationship("User", back_populates="scores")
+
+class ForumThread(Base):
+    __tablename__ = "forum_threads"
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, index=True)
+    content = Column(String)
+    author_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    author = relationship("User", back_populates="threads")
+    comments = relationship("ForumComment", back_populates="thread")
+
+class ForumComment(Base):
+    __tablename__ = "forum_comments"
+    id = Column(Integer, primary_key=True, index=True)
+    content = Column(String)
+    thread_id = Column(Integer, ForeignKey("forum_threads.id"))
+    author_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    thread = relationship("ForumThread", back_populates="comments")
+    author = relationship("User", back_populates="comments")
+
 
 # Pydantic Schemas
 class UserCreate(BaseModel):
@@ -59,6 +85,34 @@ class MockExamResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class ForumThreadCreate(BaseModel):
+    title: str
+    content: str
+
+class ForumThreadResponse(BaseModel):
+    id: int
+    title: str
+    content: str
+    author_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class ForumCommentCreate(BaseModel):
+    content: str
+
+class ForumCommentResponse(BaseModel):
+    id: int
+    content: str
+    thread_id: int
+    author_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 # FastAPI App
 app = FastAPI()
 
@@ -70,7 +124,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Dependency
+# Dependencies
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
+
 def get_db():
     db = SessionLocal()
     try:
@@ -78,10 +134,30 @@ def get_db():
     finally:
         db.close()
 
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    user = db.query(User).filter(User.email == email).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+
 # Startup Event
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
+
 
 # Endpoints
 @app.post("/api/register")
@@ -113,25 +189,36 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.post("/api/mock-exams", response_model=MockExamResponse)
-def create_mock_exam(exam: MockExamCreate, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.id == exam.user_id).first()
-    if not user:
-        hashed_password = get_password_hash("testpassword")
-        dummy_user = User(id=exam.user_id, name=f"User {exam.user_id}", email=f"user{exam.user_id}@example.com", hashed_password=hashed_password)
-        db.add(dummy_user)
-        db.commit()
-        db.refresh(dummy_user)
 
-    db_exam = MockExam(score=exam.score, subject=exam.subject, user_id=exam.user_id)
+@app.post("/api/mock-exams", response_model=MockExamResponse)
+def create_mock_exam(exam: MockExamCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    db_exam = MockExam(score=exam.score, subject=exam.subject, user_id=current_user.id)
     db.add(db_exam)
     db.commit()
     db.refresh(db_exam)
     return db_exam
 
 @app.get("/api/mock-exams", response_model=List[MockExamResponse])
-def get_all_mock_exams(db: Session = Depends(get_db)):
-    return db.query(MockExam).all()
+def get_all_mock_exams(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return db.query(MockExam).filter(MockExam.user_id == current_user.id).all()
+
+
+@app.post("/api/forum/threads", response_model=ForumThreadResponse)
+def create_forum_thread(thread: ForumThreadCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    db_thread = ForumThread(
+        title=thread.title, 
+        content=thread.content, 
+        author_id=current_user.id
+    )
+    db.add(db_thread)
+    db.commit()
+    db.refresh(db_thread)
+    return db_thread
+
+@app.get("/api/forum/threads", response_model=List[ForumThreadResponse])
+def get_forum_threads(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return db.query(ForumThread).order_by(ForumThread.created_at.desc()).all()
+
 
 from recommendation_engine import generate_diagnostic
 
